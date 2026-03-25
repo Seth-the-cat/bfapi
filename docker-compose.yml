@@ -1,21 +1,45 @@
 services:
+  # --- Service 1: bfapi ---
   bfapi:
     build: .
+    container_name: bfapi
+    # ports: ["6758:8080"] # You can comment this out to keep it private
     volumes:
       - bfapi-data:/opt/bfapi/data
-    ports:
-      - "8080:8080"
-    env_file:
-      - .env
+    env_file: [.env]
     restart: unless-stopped
-    stdin_open: true
-    tty: true        
     networks:
-      - bfapi-network
+      - bf_shared_net
+
+  # --- Service 2: Historical Web ---
+  bf_historical_web:
+    build:
+      context: https://github.com/thatcuteone/py_bf_historical.git#master
+    container_name: bf_historical_web
+    command: gunicorn -w 1 -b 0.0.0.0:8000 main:app
+    # ports: ["7479:8000"] # You can comment this out to keep it private
+    env_file: [.env]
+    volumes:
+      - bf_historical_data:/app/data
+    restart: always
+    networks:
+      - bf_shared_net
+
+  # --- Cloudflare Tunnel Connector ---
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared_tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN} # You'll get this from Cloudflare
+    networks:
+      - bf_shared_net
 
 networks:
-  bfapi-network:
+  bf_shared_net:
+    driver: bridge
 
 volumes:
   bfapi-data:
-    driver: local
+  bf_historical_data:

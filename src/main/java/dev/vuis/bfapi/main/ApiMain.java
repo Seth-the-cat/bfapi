@@ -33,7 +33,6 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -73,7 +72,11 @@ public final class ApiMain {
 			BfCloudPacketHandlers.registerPacketHandler(PacketRequestedFriends.class, ApiMain::handleFriendScrapePacket);
 		}
 
-		BfConnection connection = new BfConnection(EnvironmentConfigs.BF_CLOUD_ADDRESS, mcAuth, mcProfile, EnvironmentConfigs.BF_VERSION, EnvironmentConfigs.BF_VERSION_HASH, EnvironmentConfigs.BF_HARDWARE_ID);
+		BfConnection connection = new BfConnection(
+				EnvironmentConfigs.BF_CLOUD_ADDRESS, 
+				mcAuth, mcProfile, 
+				EnvironmentConfigs.BF_VERSION, EnvironmentConfigs.BF_VERSION_HASH, EnvironmentConfigs.BF_HARDWARE_ID
+			);
 		connection.connect();
 
 		UnofficialCloudData ucd = new UnofficialCloudData(ucdPlayers, connection.dataCache, EnvironmentConfigs.BF_UCD_WRITE_FILTERED_PLAYERS);
