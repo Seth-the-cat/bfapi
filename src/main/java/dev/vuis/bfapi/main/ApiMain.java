@@ -6,26 +6,18 @@ import com.boehmod.bflib.cloud.packet.common.requests.PacketRequestedFriends;
 import com.google.common.graph.GraphBuilder;
 import com.google.common.graph.MutableGraph;
 
-import dev.vuis.bfapi.auth.MicrosoftAuth;
-import dev.vuis.bfapi.auth.MinecraftAuth;
-import dev.vuis.bfapi.auth.MsCodeWrapper;
-import dev.vuis.bfapi.auth.XblAuth;
-import dev.vuis.bfapi.auth.XstsAuth;
 import dev.vuis.bfapi.cloud.BfCloudData;
 import dev.vuis.bfapi.cloud.BfCloudPacketHandlers;
 import dev.vuis.bfapi.cloud.BfConnection;
 import dev.vuis.bfapi.cloud.unofficial.UnofficialCloudData;
-import dev.vuis.bfapi.data.AuthToken;
-import dev.vuis.bfapi.data.MinecraftProfile;
+import dev.vuis.bfapi.util.EnvironmentConfigs;
 import dev.vuis.bfapi.http.BfApiChannelInitializer;
 import dev.vuis.bfapi.http.BfApiInboundHandler;
-import dev.vuis.bfapi.util.EnvironmentConfigs;
 import dev.vuis.bfapi.util.PersistentDiskStorage;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.http.QueryStringDecoder;
 import it.unimi.dsi.fastutil.objects.ObjectIntImmutablePair;
 import it.unimi.dsi.fastutil.objects.ObjectList;
 
@@ -46,9 +38,15 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import net.raphimc.minecraftauth.MinecraftAuth;
+import net.raphimc.minecraftauth.java.JavaAuthManager;
+import net.raphimc.minecraftauth.java.model.MinecraftProfile;
+import net.raphimc.minecraftauth.msa.model.MsaDeviceCode;
+import net.raphimc.minecraftauth.msa.service.impl.DeviceCodeMsaAuthService;
 import org.jetbrains.annotations.Nullable;
 
 @Slf4j
@@ -57,25 +55,26 @@ public final class ApiMain {
 	private static @Nullable ScheduledFuture<?> cloudDataRefreshFuture = null;
 	private static @Nullable CompletableFuture<Set<UUID>> friendScrapeFuture = null;
 	private static @Nullable BfApiInboundHandler BfAPIinboundHandler;
-	private static MinecraftAuth mcAuth;
-	private static MinecraftProfile mcProfile;
-	private static MicrosoftAuth msAuth;
-	private static CompletableFuture<String> msCodeFuture;
-	private static final String msState = MicrosoftAuth.randomState();
+	private static JavaAuthManager mcAuth;
 	
 	@SneakyThrows
 	static void main() {
 		authenticate();
+
+		log.info("starting HTTP server");
+		BfApiInboundHandler inboundHandler = new BfApiInboundHandler(EnvironmentConfigs.BF_UCD_REFRESH_SECRET);
+		startHttpServer(inboundHandler);
+
 		Set<UUID> ucdPlayers = loadUcdPlayers();
 		BfCloudPacketHandlers.register();
+		
 		if (EnvironmentConfigs.BF_SCRAPE_FRIENDS) {
 			BfCloudPacketHandlers.registerPacketHandler(PacketRequestedFriends.class, ApiMain::handleFriendScrapePacket);
 		}
 
 		BfConnection connection = new BfConnection(
 				EnvironmentConfigs.BF_CLOUD_ADDRESS, 
-				mcAuth, mcProfile, 
-				EnvironmentConfigs.BF_VERSION, EnvironmentConfigs.BF_VERSION_HASH, EnvironmentConfigs.BF_HARDWARE_ID
+				mcAuth, EnvironmentConfigs.BF_VERSION, EnvironmentConfigs.BF_VERSION_HASH, EnvironmentConfigs.BF_HARDWARE_ID
 			);
 		connection.connect();
 
@@ -115,14 +114,6 @@ public final class ApiMain {
 			.childHandler(new BfApiChannelInitializer(inboundHandler));
 
 		bootstrap.bind(EnvironmentConfigs.HOST_PORT).syncUninterruptibly();
-	}
-
-	private static String parseRedirectResult(String uri) {
-		QueryStringDecoder qs = new QueryStringDecoder(uri);
-		if (!qs.parameters().containsKey("code")) {
-			throw new IllegalArgumentException("uri does not have code query parameter");
-		}
-		return qs.parameters().get("code").getFirst();
 	}
 
 	private static void refreshCloudData(BfConnection connection) {
@@ -222,58 +213,27 @@ public final class ApiMain {
         return new HashSet<>();
     }
 }
-private static AuthToken login() throws InterruptedException, ExecutionException {
-		AuthToken msAuthorizationCode;
-			if (EnvironmentConfigs.MS_PASTE_REDIRECT) {
-				log.info("microsoft auth URL: {}", msAuth.getAuthUri(MicrosoftAuth.XBOX_LIVE_SCOPE, msState));
-				// paste redirect link
-				log.info("paste redirected location:");
-				String redirectInput = IO.readln();
-				msAuthorizationCode = new AuthToken(parseRedirectResult(redirectInput)); 
-			} else{
-					log.info("microsoft auth URL: {}", msAuth.getAuthUri(MicrosoftAuth.XBOX_LIVE_SCOPE, msState));
-            		msAuthorizationCode = new AuthToken(msCodeFuture.get());
-				}
-		return msAuthorizationCode;
-	}
 
 
-	private static void authenticate() throws IOException , InterruptedException, ExecutionException {
-		String msClientSecret = null;
-		AuthToken msAuthorizationCode = null;
-		MsCodeWrapper msCodeWrapper = null;
-		if (EnvironmentConfigs.MS_CLIENT_SECRET_FILE != null) {
-		 	msClientSecret = Files.readString(Path.of(EnvironmentConfigs.MS_CLIENT_SECRET_FILE));
-		}
-
-		msAuth = new MicrosoftAuth(
-			EnvironmentConfigs.MS_CLIENT_ID,
-			msClientSecret,
-			EnvironmentConfigs.MS_REDIRECT_HOST + (EnvironmentConfigs.MS_PASTE_REDIRECT ? "" : BfApiInboundHandler.AUTH_CALLBACK_PATH)
-		);
-
-		if (!EnvironmentConfigs.MS_PASTE_REDIRECT) {
-			msCodeFuture = new CompletableFuture<>();
-			msCodeWrapper = new MsCodeWrapper(msCodeFuture, msState);
-		}
-
-		BfApiInboundHandler inboundHandler = new BfApiInboundHandler(msCodeWrapper, EnvironmentConfigs.BF_UCD_REFRESH_SECRET);
-		startHttpServer(inboundHandler);
-		if (PersistentDiskStorage.getInstance().getMSRefreshToken() == null){
-			msAuthorizationCode = login();
-			try{
-				msAuth.redeemCode(msAuthorizationCode);
-			} catch (InterruptedException e) {
-				log.info("An Error Accurred while trying to redeem current Acsses Token");
-				authenticate();
-				return;
+	private static void authenticate() throws IOException , InterruptedException, ExecutionException, TimeoutException {
+		String storedToken = PersistentDiskStorage.getInstance().getMSRefreshToken();
+		if (storedToken == null) {
+			log.error("could not load Refresh token from file Please Authenticate");
+			mcAuth = JavaAuthManager.create(MinecraftAuth.createHttpClient("bfapi/1.0-SNAPSHOT"))
+				.login(DeviceCodeMsaAuthService::new, (Consumer<MsaDeviceCode>) code -> log.info("microsoft auth URL: {}", code.getDirectVerificationUri()));
+				PersistentDiskStorage.getInstance().setRefreshToken(mcAuth.getMsaToken().getUpToDate().getRefreshToken());
 			}
+		else {
+			log.info("loaded Stored Refresh token from file");
+			mcAuth = JavaAuthManager.create(MinecraftAuth.createHttpClient("bfapi/1.0-SNAPSHOT")).login(storedToken);
 		}
-		
-		XblAuth xblAuth = new XblAuth(msAuth);
-		XstsAuth xstsAuth = new XstsAuth(xblAuth);
-		mcAuth = new MinecraftAuth(xstsAuth);
-		mcProfile = mcAuth.retrieveProfile();
-		log.info("authenticated as {} ({})", mcProfile.username(), mcProfile.uuid());
+
+		log.info("retrieving profile");
+		MinecraftProfile mcProfile = mcAuth.getMinecraftProfile().getUpToDate();
+		log.info("authenticated as {} ({})", mcProfile.getName(), mcProfile.getId());
+
+
+
+
 	}
 }
